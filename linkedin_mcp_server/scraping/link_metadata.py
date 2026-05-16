@@ -114,6 +114,11 @@ _REFERENCE_CAPS = {
     # Kept in sync with the literal cap=50 in extractor._build_feed_references
     # where SDUI-derived /posts/<slug> permalinks are appended.
     "feed": 50,
+    # Headroom for get_pending_invitations' limit ceiling (Field(ge=1, le=100)).
+    # The extractor trims to the per-call limit before returning, so this cap
+    # only governs the upper bound of how many inviter profiles can survive
+    # the dedupe pass — the request-level limit is the operative ceiling.
+    "invitations": 100,
 }
 
 # A label must carry at least one letter or digit in any script, so the class is
