@@ -1393,6 +1393,78 @@ class TestConnectWithPerson:
 
         assert result["status"] == "unavailable"
 
+    async def test_submit_invite_dialog_handles_two_button_gating_dialog(
+        self, mock_page
+    ):
+        """Two-button "Add a note to your invitation?" gating dialog (issue
+        #455): nth(0) is "Add a note", nth(1) is "Send without a note".
+
+        Asserts the secondary-button click that reveals the textarea fires
+        even with btn_count == 2 (legacy guard required >= 3 and skipped
+        the click, leaving the textarea unmounted)."""
+        extractor = LinkedInExtractor(mock_page)
+
+        # Track each button click so we can assert the "Add a note" path
+        # was taken to reveal the textarea.
+        clicks: list[int] = []
+
+        textarea_visible = {"value": False}
+
+        # Two button locators inside the gating dialog: nth(0) "Add a
+        # note" reveals the textarea, nth(1) "Send without a note".
+        button_locators = [MagicMock(), MagicMock()]
+        for idx, btn in enumerate(button_locators):
+
+            def make_click(i: int):
+                async def _click(*args, **kwargs):
+                    clicks.append(i)
+                    if i == 0:
+                        textarea_visible["value"] = True
+                    return None
+
+                return _click
+
+            btn.click = AsyncMock(side_effect=make_click(idx))
+            btn.focus = AsyncMock()
+
+        button_collection = MagicMock()
+        button_collection.count = AsyncMock(return_value=2)
+        button_collection.nth = MagicMock(side_effect=lambda i: button_locators[i])
+
+        textarea_locator = MagicMock()
+        textarea_locator.count = AsyncMock(
+            side_effect=lambda: 1 if textarea_visible["value"] else 0
+        )
+        textarea_locator.first = textarea_locator
+        textarea_locator.fill = AsyncMock()
+
+        # Route page.locator() calls by selector — buttons vs textarea —
+        # so the gating dialog's button collection is distinguishable
+        # from the textarea probe.
+        def locator_router(selector: str):
+            if "textarea" in selector:
+                return textarea_locator
+            return button_collection
+
+        mock_page.locator = MagicMock(side_effect=locator_router)
+        mock_page.wait_for_selector = AsyncMock()
+        mock_page.keyboard = MagicMock()
+        mock_page.keyboard.press = AsyncMock()
+
+        with patch.object(
+            extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+        ):
+            submitted, note_sent = await extractor._submit_invite_dialog(
+                "Hi from a test"
+            )
+
+        assert submitted is True
+        assert note_sent is True
+        # Clicked "Add a note" (index 0) to reveal the textarea, then the
+        # primary button (index 1) to send.
+        assert clicks == [0, 1]
+        textarea_locator.fill.assert_awaited_once()
+
     async def test_references_are_grouped_by_section(self, mock_page):
         extractor = LinkedInExtractor(mock_page)
         with (

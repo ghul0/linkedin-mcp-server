@@ -1559,15 +1559,25 @@ class LinkedInExtractor:
         if note:
             textarea_count = await self._page.locator(_DIALOG_TEXTAREA_SELECTOR).count()
             if textarea_count == 0:
-                # Reveal the note textarea via the secondary action. The note
-                # layout exposes three buttons (dismiss, secondary, primary);
-                # require all three before clicking the second-to-last so we
-                # never click dismiss on a no-note layout.
+                # Reveal the note textarea via the secondary action.
+                # Two layouts are now in the wild and both place "Add a
+                # note" at index ``btn_count - 2``:
+                #   * Legacy invite dialog (3 buttons): dismiss, secondary
+                #     "Add a note", primary "Send" -> nth(1) is secondary.
+                #   * "Add a note to your invitation?" gating dialog (2
+                #     buttons, rolled out 2026-05): "Add a note",
+                #     "Send without a note" -> nth(0) is the only path
+                #     that mounts the textarea. See issue #455.
+                # If LinkedIn ever serves a 2-button dismiss/primary
+                # no-note layout, the click below misroutes to dismiss;
+                # the textarea-presence recheck via _fill_dialog_textarea
+                # then fails and the caller returns connect_unavailable
+                # without sending — the same outcome as today.
                 buttons = self._page.locator(
                     f"{_DIALOG_SELECTOR} button, {_DIALOG_SELECTOR} [role='button']"
                 )
                 btn_count = await buttons.count()
-                if btn_count >= 3:
+                if btn_count >= 2:
                     await buttons.nth(btn_count - 2).click()
                     try:
                         await self._page.wait_for_selector(
