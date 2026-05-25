@@ -1072,6 +1072,149 @@ class TestConnectWithPerson:
 
         assert result["status"] == "send_failed"
 
+    async def test_premium_upsell_message_reads_linkedin_dialog_text(self, mock_page):
+        """Premium upsell detection returns LinkedIn's raw dialog text."""
+        extractor = LinkedInExtractor(mock_page)
+        premium_link = MagicMock()
+        premium_link.wait_for = AsyncMock(return_value=None)
+        premium_link.is_visible = AsyncMock(return_value=True)
+        premium_link.inner_text = AsyncMock(return_value="fallback")
+        premium_link.first = premium_link
+        mock_page.locator.return_value = premium_link
+        mock_page.evaluate = AsyncMock(
+            return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+
+        result = await extractor._get_premium_upsell_message(timeout=1234)
+
+        assert (
+            result
+            == "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+        mock_page.locator.assert_called_once_with(
+            'dialog[open] a[href*="/premium/"], [role="dialog"] a[href*="/premium/"]'
+        )
+        premium_link.wait_for.assert_awaited_once_with(state="visible", timeout=1234)
+
+    async def test_submit_invite_dialog_reports_premium_after_add_note(self, mock_page):
+        """Add-note Premium upsell is a note-limit block, not no-dialog."""
+        from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        extractor = LinkedInExtractor(mock_page)
+        textarea = MagicMock()
+        textarea.count = AsyncMock(return_value=0)
+        add_note_button = MagicMock()
+        add_note_button.click = AsyncMock(return_value=None)
+        buttons = MagicMock()
+        buttons.count = AsyncMock(return_value=3)
+        buttons.nth.return_value = add_note_button
+
+        def locator_for(selector: str):
+            return textarea if "textarea" in selector else buttons
+
+        mock_page.locator.side_effect = locator_for
+        mock_page.wait_for_selector = AsyncMock(
+            side_effect=PlaywrightTimeoutError("textarea timeout")
+        )
+
+        with (
+            patch.object(
+                extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+            ) as mock_message,
+            patch.object(
+                extractor, "_dismiss_dialog", new_callable=AsyncMock
+            ) as mock_dismiss,
+        ):
+            result = await extractor._submit_invite_dialog("Hello")
+
+        assert result == (
+            False,
+            False,
+            "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+        )
+        add_note_button.click.assert_awaited_once()
+        mock_message.assert_awaited_once()
+        mock_dismiss.assert_awaited_once()
+
+    async def test_submit_invite_dialog_reports_premium_after_send_click_failure(
+        self, mock_page
+    ):
+        """Premium upsell intercepting the Send click is a note-limit block.
+
+        When LinkedIn swaps the invite dialog for the Premium upsell at the
+        moment of submit, the original primary button is detached or pointer-
+        event covered, so ``_click_dialog_primary_button`` and the keyboard
+        fallback both fail. Without the post-click upsell probe the caller
+        would dismiss the dialog and report ``connect_unavailable`` even
+        though LinkedIn's raw quota message is sitting in the visible modal.
+        """
+        extractor = LinkedInExtractor(mock_page)
+
+        # Textarea already exposed so the reveal/fill branch succeeds and the
+        # test focuses on the post-submit failure path.
+        textarea = MagicMock()
+        textarea.count = AsyncMock(return_value=1)
+        textarea.first = textarea
+        textarea.fill = AsyncMock()
+
+        buttons = MagicMock()
+        buttons.count = AsyncMock(return_value=2)
+        primary_button = MagicMock()
+        primary_button.focus = AsyncMock()
+        buttons.nth.return_value = primary_button
+
+        def locator_for(selector: str):
+            return textarea if "textarea" in selector else buttons
+
+        mock_page.locator.side_effect = locator_for
+        mock_page.keyboard = MagicMock()
+        mock_page.keyboard.press = AsyncMock()
+
+        message = "You're out of free custom notes. Bypass the limit with Premium..."
+
+        with (
+            patch.object(
+                extractor,
+                "_dialog_is_open",
+                new_callable=AsyncMock,
+                # First call: dialog open at entry. Second call: still open
+                # after the keyboard fallback, so sent remains False.
+                side_effect=[True, True],
+            ),
+            patch.object(
+                extractor,
+                "_fill_dialog_textarea",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                extractor,
+                "_click_dialog_primary_button",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value=message,
+            ) as mock_message,
+            patch.object(
+                extractor, "_dismiss_dialog", new_callable=AsyncMock
+            ) as mock_dismiss,
+        ):
+            result = await extractor._submit_invite_dialog("Hello")
+
+        assert result == (False, False, message)
+        mock_message.assert_awaited_once()
+        mock_dismiss.assert_awaited_once()
+
     async def test_connectable_no_dialog_returns_connect_unavailable(self, mock_page):
         """Deeplink opened but no dialog appeared → connect_unavailable."""
         extractor = LinkedInExtractor(mock_page)
@@ -1231,6 +1374,55 @@ class TestConnectWithPerson:
         mock_open_more.assert_awaited_once()
         # Critical: deeplink must NOT fire and dialog must NOT be submitted.
         mock_nav.assert_not_awaited()
+        mock_submit.assert_not_awaited()
+
+    async def test_follow_only_with_note_reports_note_limit_from_deeplink_probe(
+        self, mock_page
+    ):
+        """A requested note may reveal Premium quota without submitting."""
+        extractor = LinkedInExtractor(mock_page)
+        text = "Public Figure\n\n· 3rd+\n\nCEO\n\nFollow\nMessage\nMore\n"
+
+        with (
+            patch.object(extractor, "scrape_person", self._mock_scrape(text)),
+            patch.object(
+                extractor,
+                "_read_action_signals",
+                new_callable=AsyncMock,
+                side_effect=[
+                    self._signals(compose=True, labeled_action=True),
+                    self._signals(compose=True, labeled_action=True),
+                ],
+            ),
+            patch.object(
+                extractor,
+                "_open_more_menu",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                extractor, "_navigate_to_page", new_callable=AsyncMock
+            ) as mock_nav,
+            patch.object(
+                extractor,
+                "_probe_invite_note_limit",
+                new_callable=AsyncMock,
+                return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+            ) as mock_probe,
+            patch.object(
+                extractor, "_submit_invite_dialog", new_callable=AsyncMock
+            ) as mock_submit,
+        ):
+            result = await extractor.connect_with_person("testuser", note="Hello")
+
+        assert result["status"] == "custom_note_limit_reached"
+        assert (
+            result["message"]
+            == "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+        assert result["note_sent"] is False
+        mock_nav.assert_awaited_once()
+        mock_probe.assert_awaited_once()
         mock_submit.assert_not_awaited()
 
     async def test_more_menu_unavailable_does_not_send(self, mock_page):
@@ -1451,15 +1643,26 @@ class TestConnectWithPerson:
         mock_page.keyboard = MagicMock()
         mock_page.keyboard.press = AsyncMock()
 
-        with patch.object(
-            extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+        with (
+            patch.object(
+                extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
-            submitted, note_sent = await extractor._submit_invite_dialog(
-                "Hi from a test"
-            )
+            (
+                submitted,
+                note_sent,
+                note_limit_message,
+            ) = await extractor._submit_invite_dialog("Hi from a test")
 
         assert submitted is True
         assert note_sent is True
+        assert note_limit_message is None
         # Clicked "Add a note" (index 0) to reveal the textarea, then the
         # primary button (index 1) to send.
         assert clicks == [0, 1]
