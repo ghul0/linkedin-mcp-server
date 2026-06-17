@@ -9331,3 +9331,5 @@ class TestGetPendingInvitations:
         # the two regression guards from review feedback
         assert ':not([aria-expanded="true"])' in js
         assert ":not([data-mcp-clicked])" in js
+        # mark only after dispatch succeeds so a failed click can be retried
+        assert js.index("btn.dispatchEvent") < js.index("btn.dataset.mcpClicked")
