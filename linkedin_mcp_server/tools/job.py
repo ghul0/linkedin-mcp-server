@@ -31,7 +31,7 @@ def register_job_tools(
         annotations={
             "readOnlyHint": False,
             "destructiveHint": True,
-            "idempotentHint": True,
+            "idempotentHint": False,
             "openWorldHint": True,
         },
         tags={"job", "scraping"},
@@ -92,7 +92,7 @@ def register_job_tools(
         annotations={
             "readOnlyHint": False,
             "destructiveHint": True,
-            "idempotentHint": True,
+            "idempotentHint": False,
             "openWorldHint": True,
         },
         tags={"job", "search"},
