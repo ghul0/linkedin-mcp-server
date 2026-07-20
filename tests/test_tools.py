@@ -34,6 +34,7 @@ def _make_mock_extractor(scrape_result: dict) -> MagicMock:
     mock.search_conversations = AsyncMock(return_value=scrape_result)
     mock.send_message = AsyncMock(return_value=scrape_result)
     mock.get_pending_invitations = AsyncMock(return_value=scrape_result)
+    mock.send_thread_message = AsyncMock(return_value=scrape_result)
     mock.get_my_profile = AsyncMock(return_value=scrape_result)
     mock.search_companies = AsyncMock(return_value=scrape_result)
     mock.get_company_employees = AsyncMock(return_value=scrape_result)
@@ -857,6 +858,109 @@ class TestMessagingTools:
             "testuser", "Hello!", confirm_send=True, profile_urn=None
         )
 
+    async def test_send_thread_message_success(self, mock_context):
+        expected = {
+            "url": "https://www.linkedin.com/messaging/thread/thread-1/",
+            "status": "sent",
+            "message": "Message sent.",
+            "recipient_selected": True,
+            "sent": True,
+        }
+        mock_extractor = _make_mock_extractor(expected)
+
+        from linkedin_mcp_server.tools.messaging import register_messaging_tools
+
+        mcp = FastMCP("test")
+        register_messaging_tools(mcp)
+
+        tool_fn = await get_tool_fn(mcp, "send_thread_message")
+        result = await tool_fn(
+            "thread-1",
+            "Hello!",
+            True,
+            mock_context,
+            "Ada Lovelace",
+            extractor=mock_extractor,
+        )
+
+        assert result["status"] == "sent"
+        assert result["sent"] is True
+        mock_extractor.send_thread_message.assert_awaited_once_with(
+            "thread-1",
+            "Hello!",
+            confirm_send=True,
+            expected_recipient="Ada Lovelace",
+        )
+
+    async def test_send_thread_message_requires_confirmation_before_extractor(
+        self, mock_context
+    ):
+        from unittest.mock import patch
+
+        from linkedin_mcp_server.tools.messaging import register_messaging_tools
+
+        mcp = FastMCP("test")
+        register_messaging_tools(mcp)
+        tool_fn = await get_tool_fn(mcp, "send_thread_message")
+
+        with patch(
+            "linkedin_mcp_server.tools.messaging.get_ready_extractor",
+            new_callable=AsyncMock,
+        ) as get_extractor:
+            result = await tool_fn(
+                "thread-1",
+                "Hello!",
+                False,
+                mock_context,
+                "Ada Lovelace",
+            )
+
+        assert result["status"] == "confirmation_required"
+        assert result["sent"] is False
+        get_extractor.assert_not_awaited()
+
+    async def test_send_thread_message_rejects_invalid_thread_id(self, mock_context):
+        from linkedin_mcp_server.tools.messaging import register_messaging_tools
+
+        mcp = FastMCP("test")
+        register_messaging_tools(mcp)
+        tool_fn = await get_tool_fn(mcp, "send_thread_message")
+        mock_extractor = _make_mock_extractor({})
+
+        result = await tool_fn(
+            "thread/with-invalid-path",
+            "Hello!",
+            True,
+            mock_context,
+            "Ada Lovelace",
+            extractor=mock_extractor,
+        )
+
+        assert result["status"] == "invalid_request"
+        assert result["sent"] is False
+        mock_extractor.send_thread_message.assert_not_awaited()
+
+    async def test_send_thread_message_requires_exact_recipient(self, mock_context):
+        from linkedin_mcp_server.tools.messaging import register_messaging_tools
+
+        mcp = FastMCP("test")
+        register_messaging_tools(mcp)
+        tool_fn = await get_tool_fn(mcp, "send_thread_message")
+        mock_extractor = _make_mock_extractor({})
+
+        result = await tool_fn(
+            "thread-1",
+            "Hello!",
+            True,
+            mock_context,
+            "",
+            extractor=mock_extractor,
+        )
+
+        assert result["status"] == "invalid_request"
+        assert result["sent"] is False
+        mock_extractor.send_thread_message.assert_not_awaited()
+
     async def test_send_message_with_profile_urn(self, mock_context):
         expected = {
             "url": "https://www.linkedin.com/messaging/thread/abc123/",
@@ -1306,6 +1410,7 @@ class TestToolTimeouts:
             "get_conversation",
             "search_conversations",
             "send_message",
+            "send_thread_message",
             "get_pending_invitations",
             "get_feed",
             "close_session",
@@ -1338,6 +1443,7 @@ class TestToolTimeouts:
             "get_conversation",
             "search_conversations",
             "send_message",
+            "send_thread_message",
             "get_pending_invitations",
             "get_feed",
             "close_session",

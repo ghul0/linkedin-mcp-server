@@ -4680,6 +4680,124 @@ class TestSearchConversations:
 
 
 class TestSendMessage:
+    async def test_thread_send_requires_confirmation_before_navigation(self, mock_page):
+        extractor = LinkedInExtractor(mock_page)
+        navigate = AsyncMock()
+
+        with patch.object(extractor, "_navigate_to_page", navigate):
+            result = await extractor.send_thread_message(
+                "thread-1",
+                "Hello!",
+                confirm_send=False,
+                expected_recipient="Ada Lovelace",
+            )
+
+        assert result["status"] == "confirmation_required"
+        assert result["sent"] is False
+        navigate.assert_not_awaited()
+
+    async def test_thread_send_requires_exact_recipient_before_navigation(
+        self, mock_page
+    ):
+        extractor = LinkedInExtractor(mock_page)
+        navigate = AsyncMock()
+
+        with patch.object(extractor, "_navigate_to_page", navigate):
+            result = await extractor.send_thread_message(
+                "thread-1",
+                "Hello!",
+                confirm_send=True,
+                expected_recipient=" ",
+            )
+
+        assert result["status"] == "invalid_request"
+        assert result["sent"] is False
+        navigate.assert_not_awaited()
+
+    async def test_thread_send_rejects_wrong_visible_recipient(self, mock_page):
+        extractor = LinkedInExtractor(mock_page)
+        send_surface = AsyncMock()
+        with (
+            patch.object(extractor, "_navigate_to_page", new_callable=AsyncMock),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.detect_rate_limit",
+                new_callable=AsyncMock,
+            ),
+            patch.object(extractor, "_wait_for_main_text", new_callable=AsyncMock),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.handle_modal_close",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                extractor,
+                "_thread_page_matches_recipient",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(extractor, "_dismiss_message_ui", new_callable=AsyncMock),
+            patch.object(
+                extractor,
+                "_send_current_message_surface",
+                send_surface,
+            ),
+        ):
+            result = await extractor.send_thread_message(
+                "thread-1",
+                "Hello!",
+                confirm_send=True,
+                expected_recipient="Ada Lovelace",
+            )
+
+        assert result["status"] == "recipient_resolution_failed"
+        assert result["sent"] is False
+        send_surface.assert_not_awaited()
+
+    async def test_thread_send_delegates_only_after_recipient_verification(
+        self, mock_page
+    ):
+        extractor = LinkedInExtractor(mock_page)
+        expected_result = {
+            "url": "https://www.linkedin.com/messaging/thread/thread-1/",
+            "status": "sent",
+            "message": "Message sent.",
+            "recipient_selected": True,
+            "sent": True,
+        }
+        send_surface = AsyncMock(return_value=expected_result)
+        with (
+            patch.object(extractor, "_navigate_to_page", new_callable=AsyncMock),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.detect_rate_limit",
+                new_callable=AsyncMock,
+            ),
+            patch.object(extractor, "_wait_for_main_text", new_callable=AsyncMock),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.handle_modal_close",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                extractor,
+                "_thread_page_matches_recipient",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as matches_recipient,
+            patch.object(extractor, "_send_current_message_surface", send_surface),
+        ):
+            result = await extractor.send_thread_message(
+                "thread-1",
+                "Hello!",
+                confirm_send=True,
+                expected_recipient="Ada Lovelace",
+            )
+
+        assert result == expected_result
+        matches_recipient.assert_awaited_once_with("Ada Lovelace")
+        send_surface.assert_awaited_once_with(
+            "Hello!",
+            confirm_send=True,
+            recipient_selected=True,
+        )
+
     async def test_dry_run_returns_confirmation_required(self, mock_page):
         """send_message with confirm_send=False returns confirmation_required status."""
         extractor = LinkedInExtractor(mock_page)
@@ -4881,11 +4999,16 @@ class TestSendMessage:
                 "_dismiss_message_ui",
                 new_callable=AsyncMock,
             ),
+            patch.object(
+                extractor,
+                "_send_current_message_surface",
+                new_callable=AsyncMock,
+            ),
         ):
             await extractor.send_message(
                 "testuser",
                 "Hello!",
-                confirm_send=False,
+                confirm_send=True,
                 profile_urn="ACoAAB1IelEB",
             )
 
