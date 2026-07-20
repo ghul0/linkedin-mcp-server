@@ -4715,6 +4715,7 @@ class TestSendMessage:
         navigate.assert_not_awaited()
 
     async def test_thread_send_rejects_wrong_visible_recipient(self, mock_page):
+        mock_page.url = "https://www.linkedin.com/messaging/thread/thread-1/"
         extractor = LinkedInExtractor(mock_page)
         send_surface = AsyncMock()
         with (
@@ -4755,6 +4756,7 @@ class TestSendMessage:
     async def test_thread_send_delegates_only_after_recipient_verification(
         self, mock_page
     ):
+        mock_page.url = "https://www.linkedin.com/messaging/thread/thread-1/"
         extractor = LinkedInExtractor(mock_page)
         expected_result = {
             "url": "https://www.linkedin.com/messaging/thread/thread-1/",

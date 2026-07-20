@@ -2765,6 +2765,10 @@ class LinkedInExtractor:
                 const prefix = normalize(headerPrefix);
                 const names = Array.from(root.querySelectorAll('[aria-label]'))
                     .filter(visible)
+                    // Conversation sidebar rows also expose this aria-label.
+                    // Exclude them so a different visible thread cannot satisfy
+                    // the current-thread recipient check.
+                    .filter(element => !element.closest('main li'))
                     .map(element => normalize(element.getAttribute('aria-label')))
                     .filter(label => label.startsWith(prefix))
                     .map(label => label.slice(prefix.length).trim());
@@ -4042,6 +4046,15 @@ class LinkedInExtractor:
         await detect_rate_limit(self._page)
         await self._wait_for_main_text(log_context="Conversation")
         await handle_modal_close(self._page)
+
+        if self._extract_thread_id(self._page.url) != thread_id:
+            await self._dismiss_message_ui()
+            return self._message_action_result(
+                self._page.url,
+                "thread_resolution_failed",
+                "LinkedIn did not remain on the explicitly requested messaging thread.",
+                recipient_selected=False,
+            )
 
         recipient_selected = await self._thread_page_matches_recipient(
             expected_recipient

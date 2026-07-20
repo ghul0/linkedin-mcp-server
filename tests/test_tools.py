@@ -961,6 +961,32 @@ class TestMessagingTools:
         assert result["sent"] is False
         mock_extractor.send_thread_message.assert_not_awaited()
 
+    async def test_send_message_requires_confirmation_before_extractor(
+        self, mock_context
+    ):
+        from unittest.mock import patch
+
+        from linkedin_mcp_server.tools.messaging import register_messaging_tools
+
+        mcp = FastMCP("test")
+        register_messaging_tools(mcp)
+        tool_fn = await get_tool_fn(mcp, "send_message")
+
+        with patch(
+            "linkedin_mcp_server.tools.messaging.get_ready_extractor",
+            new_callable=AsyncMock,
+        ) as get_extractor:
+            result = await tool_fn(
+                "testuser",
+                "Hello!",
+                False,
+                mock_context,
+            )
+
+        assert result["status"] == "confirmation_required"
+        assert result["sent"] is False
+        get_extractor.assert_not_awaited()
+
     async def test_send_message_with_profile_urn(self, mock_context):
         expected = {
             "url": "https://www.linkedin.com/messaging/thread/abc123/",
