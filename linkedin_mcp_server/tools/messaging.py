@@ -5,6 +5,7 @@ Provides inbox listing, conversation reading, message search, and sending.
 """
 
 import logging
+import re
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -19,6 +20,32 @@ from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_er
 from linkedin_mcp_server.error_handler import raise_tool_error
 
 logger = logging.getLogger(__name__)
+_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
+
+
+def _confirmation_required_result(url: str) -> dict[str, Any]:
+    """Return a safe response without initializing or touching the browser."""
+    return {
+        "url": url,
+        "status": "confirmation_required",
+        "message": (
+            "Explicit current-session approval of this exact recipient and "
+            "exact message is required before sending."
+        ),
+        "recipient_selected": False,
+        "sent": False,
+    }
+
+
+def _invalid_send_result(url: str, message: str) -> dict[str, Any]:
+    """Return a rejected send request without initializing the browser."""
+    return {
+        "url": url,
+        "status": "invalid_request",
+        "message": message,
+        "recipient_selected": False,
+        "sent": False,
+    }
 
 
 def register_messaging_tools(
@@ -234,8 +261,9 @@ def register_messaging_tools(
 
         Args:
             linkedin_username: LinkedIn username of the recipient; a full profile URL is accepted too
-            message: The message text to send
-            confirm_send: Must be True to send the message
+            message: The exact message text approved for this send
+            confirm_send: Must be the literal True after current-session approval of
+                this exact recipient and exact message
             ctx: FastMCP context for progress reporting
             profile_urn: Optional profile URN (e.g. ACoAAB...) to construct the
                 compose URL directly. Providing this bypasses the Message-button
@@ -246,6 +274,15 @@ def register_messaging_tools(
         Returns:
             Dict with url, status, message, recipient_selected, and sent.
         """
+        profile_url = f"https://www.linkedin.com/in/{linkedin_username}/"
+        if confirm_send is not True:
+            return _confirmation_required_result(profile_url)
+        if not message.strip():
+            return _invalid_send_result(
+                profile_url,
+                "A non-empty exact message is required before sending.",
+            )
+
         try:
             extractor = extractor or await get_ready_extractor(
                 ctx, tool_name="send_message"
@@ -276,3 +313,91 @@ def register_messaging_tools(
                 raise_tool_error(relogin_exc, "send_message")
         except Exception as e:
             raise_tool_error(e, "send_message")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Send Thread Message",
+        annotations={"destructiveHint": True, "openWorldHint": True},
+        tags={"messaging", "actions"},
+        exclude_args=["extractor"],
+    )
+    async def send_thread_message(
+        thread_id: str,
+        message: str,
+        confirm_send: bool,
+        ctx: Context,
+        expected_recipient: str,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Send a message in an existing LinkedIn messaging thread.
+
+        This is a write operation. The tool refuses to initialize or touch the
+        browser unless the caller supplies ``confirm_send=True`` for the exact
+        recipient and exact message approved by the operator in the current
+        session. The visible thread recipient is independently verified before
+        the composer is allowed to submit.
+
+        Args:
+            thread_id: LinkedIn messaging thread ID
+            message: The exact message text approved for this send
+            confirm_send: Must be the literal True after current-session approval
+                of this exact recipient and exact message
+            ctx: FastMCP context for progress reporting
+            expected_recipient: Required visible recipient name to verify before send
+
+        Returns:
+            Dict with url, status, message, recipient_selected, and sent.
+        """
+        thread_url = f"https://www.linkedin.com/messaging/thread/{thread_id}/"
+        if confirm_send is not True:
+            return _confirmation_required_result(thread_url)
+        if not message.strip():
+            return _invalid_send_result(
+                thread_url,
+                "A non-empty exact message is required before sending.",
+            )
+        if not _THREAD_ID_RE.fullmatch(thread_id.strip()):
+            return _invalid_send_result(
+                thread_url,
+                "A valid LinkedIn messaging thread ID is required before sending.",
+            )
+        if not expected_recipient.strip():
+            return _invalid_send_result(
+                thread_url,
+                "The exact expected recipient is required before sending.",
+            )
+
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="send_thread_message"
+            )
+            logger.info(
+                "Sending thread message to %s (confirm_send=%s, expected_recipient=%s)",
+                thread_id,
+                confirm_send,
+                expected_recipient,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Sending thread message"
+            )
+
+            result = await extractor.send_thread_message(
+                thread_id,
+                message,
+                confirm_send=confirm_send,
+                expected_recipient=expected_recipient,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "send_thread_message")
+        except Exception as e:
+            raise_tool_error(e, "send_thread_message")  # NoReturn

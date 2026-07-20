@@ -3132,6 +3132,45 @@ class LinkedInExtractor:
         )
         return bool(matched)
 
+    async def _thread_page_matches_recipient(self, expected_recipient: str) -> bool:
+        """Verify a thread's exact recipient from its accessible header label.
+
+        The thread header is the only stable surface that identifies the open
+        recipient without treating quoted message text as identity evidence.
+        BrowserManager pins the runtime locale to en-US, so this explicit
+        locale-bound prefix is safer than searching arbitrary page text.
+        """
+        normalized_recipient = expected_recipient.strip().casefold()
+        if not normalized_recipient:
+            return False
+
+        matched = await self._page.evaluate(
+            """({ expected, headerPrefix }) => {
+                const normalize = value =>
+                    (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                const visible = element => !!(
+                    element &&
+                    (element.offsetWidth || element.offsetHeight || element.getClientRects().length)
+                );
+                const root = document.querySelector('main') || document.body;
+                if (!root) return false;
+
+                const prefix = normalize(headerPrefix);
+                const names = Array.from(root.querySelectorAll('[aria-label]'))
+                    .filter(visible)
+                    .map(element => normalize(element.getAttribute('aria-label')))
+                    .filter(label => label.startsWith(prefix))
+                    .map(label => label.slice(prefix.length).trim());
+
+                return names.some(name => name === normalize(expected));
+            }""",
+            {
+                "expected": normalized_recipient,
+                "headerPrefix": _MESSAGING_CHROME_STRINGS["en"].thread_header_prefix,
+            },
+        )
+        return bool(matched)
+
     async def _message_text_occurrences_outside_composer(self, message: str) -> int:
         """Count visible message text occurrences outside editable compose boxes."""
         return int(
@@ -5097,6 +5136,21 @@ class LinkedInExtractor:
         recipient_selected: bool = True,
     ) -> dict[str, Any]:
         """Type and send a message on the currently-open LinkedIn composer."""
+        if confirm_send is not True:
+            return self._message_action_result(
+                self._page.url,
+                "confirmation_required",
+                "Explicit current-session approval of this exact recipient and exact message is required before sending.",
+                recipient_selected=recipient_selected,
+            )
+        if not message.strip():
+            return self._message_action_result(
+                self._page.url,
+                "invalid_request",
+                "A non-empty exact message is required before sending.",
+                recipient_selected=recipient_selected,
+            )
+
         compose_box = await self._resolve_message_compose_box()
         if compose_box is None:
             await self._dismiss_message_ui()
@@ -5104,15 +5158,6 @@ class LinkedInExtractor:
                 self._page.url,
                 "composer_unavailable",
                 "LinkedIn did not expose a usable message composer.",
-                recipient_selected=recipient_selected,
-            )
-
-        if not confirm_send:
-            await self._dismiss_message_ui()
-            return self._message_action_result(
-                self._page.url,
-                "confirmation_required",
-                "Set confirm_send=true to send the message.",
                 recipient_selected=recipient_selected,
             )
 
@@ -5210,6 +5255,73 @@ class LinkedInExtractor:
             sent=True,
         )
 
+    async def send_thread_message(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        confirm_send: bool,
+        expected_recipient: str,
+    ) -> dict[str, Any]:
+        """Send an explicitly approved message in one exact existing thread.
+
+        The caller must provide the exact visible recipient and literal
+        ``confirm_send=True`` for the current approved message. The recipient
+        header is checked before the composer is touched; a thread ID alone is
+        never sufficient authorization to send.
+        """
+        thread_id = thread_id.strip()
+        expected_recipient = expected_recipient.strip()
+        thread_url = f"https://www.linkedin.com/messaging/thread/{thread_id}/"
+
+        if confirm_send is not True:
+            return self._message_action_result(
+                thread_url,
+                "confirmation_required",
+                "Explicit current-session approval of this exact recipient and exact message is required before sending.",
+            )
+        if not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", thread_id):
+            return self._message_action_result(
+                thread_url,
+                "invalid_request",
+                "A valid LinkedIn messaging thread ID is required before sending.",
+            )
+        if not message.strip():
+            return self._message_action_result(
+                thread_url,
+                "invalid_request",
+                "A non-empty exact message is required before sending.",
+            )
+        if not expected_recipient:
+            return self._message_action_result(
+                thread_url,
+                "invalid_request",
+                "The exact expected recipient is required before sending.",
+            )
+
+        await self._navigate_to_page(thread_url)
+        await detect_rate_limit(self._page)
+        await self._wait_for_main_text(log_context="Conversation")
+        await handle_modal_close(self._page)
+
+        recipient_selected = await self._thread_page_matches_recipient(
+            expected_recipient
+        )
+        if not recipient_selected:
+            await self._dismiss_message_ui()
+            return self._message_action_result(
+                self._page.url,
+                "recipient_resolution_failed",
+                "LinkedIn opened a thread, but its exact visible recipient did not match the approved recipient.",
+                recipient_selected=False,
+            )
+
+        return await self._send_current_message_surface(
+            message,
+            confirm_send=confirm_send,
+            recipient_selected=True,
+        )
+
     async def send_message(
         self,
         linkedin_username: str,
@@ -5229,6 +5341,19 @@ class LinkedInExtractor:
         """
         linkedin_username = normalize_person_identifier(linkedin_username)
         profile_url = person_profile_url(linkedin_username, "/")
+        if confirm_send is not True:
+            return self._message_action_result(
+                profile_url,
+                "confirmation_required",
+                "Explicit current-session approval of this exact recipient and exact message is required before sending.",
+            )
+        if not message.strip():
+            return self._message_action_result(
+                profile_url,
+                "invalid_request",
+                "A non-empty exact message is required before sending.",
+            )
+
         await self._navigate_to_page(profile_url)
         await detect_rate_limit(self._page)
 

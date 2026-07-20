@@ -47,6 +47,7 @@ This MCP server is **free** and **open source**, supported by [**Unipile**](http
 | `get_conversation` | Read a specific messaging conversation by username or thread ID |
 | `search_conversations` | Search messages by keyword |
 | `send_message` | Send a message to a LinkedIn user (requires confirmation) |
+| `send_thread_message` | Send an operator-approved message in an existing thread after exact recipient verification |
 | `get_pending_invitations` | List pending network invitations (received or sent) from `/mynetwork/invitation-manager/` |
 | `get_company_profile` | Extract company information with explicit section selection (posts, jobs); about-section references may include a `company_urn` entry carrying the numeric id used by LinkedIn's people-search `currentCompany` URL facet |
 | `get_company_posts` | Get recent posts from a company's LinkedIn feed |
