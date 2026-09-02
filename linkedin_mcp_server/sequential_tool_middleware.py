@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 
 import mcp.types as mt
 
@@ -15,6 +16,7 @@ from fastmcp.tools import ToolResult
 from linkedin_mcp_server.config import get_config
 from linkedin_mcp_server.exceptions import BrowserBusyError
 from linkedin_mcp_server.profile_lease import get_profile_lease
+from linkedin_mcp_server.tool_start_rate_limit import ToolStartRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,9 @@ class SequentialToolExecutionMiddleware(Middleware):
     the last one to close silently overwrites the other's cookies.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, min_tool_interval_seconds: float = 0.0) -> None:
         self._lock = asyncio.Lock()
+        self._start_limiter = ToolStartRateLimiter(min_tool_interval_seconds)
 
     async def _report_progress(
         self,
@@ -72,17 +75,43 @@ class SequentialToolExecutionMiddleware(Middleware):
                 tool_name,
                 wait_seconds,
             )
-            await self._report_progress(
-                context,
-                message="Scraper lock acquired, starting tool",
-            )
-            return await self._run_owning_the_profile(context, call_next, tool_name)
+
+            async def report_rate_wait(delay: float) -> None:
+                await self._report_progress(
+                    context,
+                    message=(
+                        "Minimum tool interval active; waiting "
+                        f"{delay:.1f}s before starting"
+                    ),
+                )
+
+            # This gate deliberately precedes profile acquisition. A paced call
+            # must never keep another process off the browser while merely
+            # waiting for its permitted start time.
+            permit = await self._start_limiter.acquire(report_rate_wait)
+            try:
+                await self._report_progress(
+                    context,
+                    message="Scraper lock acquired, starting tool",
+                )
+                return await self._run_owning_the_profile(
+                    context,
+                    call_next,
+                    tool_name,
+                    on_start=permit.commit,
+                )
+            finally:
+                # Failed profile acquisition and cancellation do not consume a
+                # start slot, and must not leave peer processes blocked.
+                permit.close()
 
     async def _run_owning_the_profile(
         self,
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
         tool_name: str,
+        *,
+        on_start: Callable[[], None] = lambda: None,
     ) -> ToolResult:
         """Run the tool while this process owns the browser profile."""
         # Imported here so the module stays importable without the driver.
@@ -118,6 +147,9 @@ class SequentialToolExecutionMiddleware(Middleware):
             # close it out from under this call. Inside the try so the finally
             # always balances it, including if the call is cancelled.
             note_call_started()
+            # Commit only now: profile handover may have taken seconds, and the
+            # configured interval is between real tool starts, not queue exits.
+            on_start()
             return await call_next(context)
         finally:
             hold_seconds = time.perf_counter() - hold_started

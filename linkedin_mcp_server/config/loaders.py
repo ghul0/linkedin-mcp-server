@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
 
-from .schema import AppConfig, ConfigurationError
+from .schema import AppConfig, ConfigurationError, MAX_MIN_TOOL_INTERVAL_SECONDS
 
 # Load .env file if present
 load_dotenv()
@@ -136,6 +136,7 @@ class EnvironmentKeys:
     PROXY_BYPASS = "PROXY_BYPASS"
     USER_DATA_DIR = "USER_DATA_DIR"
     TOOL_TIMEOUT = "TOOL_TIMEOUT"
+    MIN_TOOL_INTERVAL = "LINKEDIN_MIN_TOOL_INTERVAL_SECONDS"
     LOGIN_TIMEOUT = "LOGIN_TIMEOUT"
     LOGIN_INLINE_WAIT = "LOGIN_INLINE_WAIT"
     BROWSER_WAIT = "BROWSER_WAIT"
@@ -273,6 +274,25 @@ def load_from_env(config: AppConfig) -> AppConfig:
                 f"Invalid TOOL_TIMEOUT: '{tool_timeout_env}'. Must be a positive finite number."
             )
         config.server.tool_timeout_seconds = tool_timeout_value
+
+    if min_interval_env := os.environ.get(EnvironmentKeys.MIN_TOOL_INTERVAL):
+        try:
+            min_interval_value = float(min_interval_env)
+        except ValueError:
+            raise ConfigurationError(
+                f"Invalid {EnvironmentKeys.MIN_TOOL_INTERVAL}: "
+                f"'{min_interval_env}'. Must be a number."
+            )
+        if not (
+            math.isfinite(min_interval_value)
+            and 0 <= min_interval_value <= MAX_MIN_TOOL_INTERVAL_SECONDS
+        ):
+            raise ConfigurationError(
+                f"Invalid {EnvironmentKeys.MIN_TOOL_INTERVAL}: "
+                f"'{min_interval_env}'. Must be a non-negative finite number "
+                f"no greater than {MAX_MIN_TOOL_INTERVAL_SECONDS}."
+            )
+        config.server.min_tool_interval_seconds = min_interval_value
 
     # Manual-login wait timeout in seconds; 0 = no limit (validated in
     # BrowserConfig.validate())
@@ -525,6 +545,17 @@ def load_from_args(config: AppConfig) -> AppConfig:
         default=None,
         metavar="SECONDS",
         help="Per-tool MCP execution timeout in seconds (default: 180.0)",
+    )
+
+    parser.add_argument(
+        "--min-tool-interval-seconds",
+        type=non_negative_float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Minimum interval between MCP tool-call starts (default: 0, disabled; "
+            f"max: {MAX_MIN_TOOL_INTERVAL_SECONDS:g})"
+        ),
     )
 
     parser.add_argument(
@@ -787,6 +818,14 @@ def load_from_args(config: AppConfig) -> AppConfig:
 
     if args.tool_timeout is not None:
         config.server.tool_timeout_seconds = args.tool_timeout
+
+    if args.min_tool_interval_seconds is not None:
+        if args.min_tool_interval_seconds > MAX_MIN_TOOL_INTERVAL_SECONDS:
+            raise ConfigurationError(
+                "--min-tool-interval-seconds must be no greater than "
+                f"{MAX_MIN_TOOL_INTERVAL_SECONDS:g}"
+            )
+        config.server.min_tool_interval_seconds = args.min_tool_interval_seconds
 
     if args.login_timeout is not None:
         config.browser.login_timeout_seconds = args.login_timeout

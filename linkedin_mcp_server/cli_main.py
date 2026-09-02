@@ -560,10 +560,14 @@ def main() -> None:
 
             # Create and run the MCP server
             if proxy_backend is None:
-                mcp = create_mcp_server(tool_timeout=config.server.tool_timeout_seconds)
+                mcp = create_mcp_server(
+                    tool_timeout=config.server.tool_timeout_seconds,
+                    min_tool_interval=config.server.min_tool_interval_seconds,
+                )
             else:
                 mcp = create_mcp_server(
                     tool_timeout=config.server.tool_timeout_seconds,
+                    min_tool_interval=config.server.min_tool_interval_seconds,
                     role=ServerRole.PROXY,
                     proxy_backend=proxy_backend,
                 )

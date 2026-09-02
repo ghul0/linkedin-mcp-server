@@ -12,6 +12,7 @@ from linkedin_mcp_server.config.schema import (
     DEFAULT_BROWSER_WAIT_SECONDS,
     MAX_BROWSER_WAIT_SECONDS,
     MAX_LOGIN_INLINE_WAIT_SECONDS,
+    MAX_MIN_TOOL_INTERVAL_SECONDS,
     ServerConfig,
     is_loopback_host,
 )
@@ -192,6 +193,7 @@ class TestServerConfig:
         assert config.transport == "stdio"
         assert config.port == 8000
         assert config.tool_timeout_seconds == 180.0
+        assert config.min_tool_interval_seconds == 0.0
 
     def test_validate_passes(self):
         ServerConfig().validate()  # No error
@@ -202,6 +204,14 @@ class TestServerConfig:
     def test_validate_invalid_tool_timeout(self, bad_value):
         with pytest.raises(ConfigurationError):
             ServerConfig(tool_timeout_seconds=bad_value).validate()
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [-1.0, float("nan"), float("inf"), MAX_MIN_TOOL_INTERVAL_SECONDS + 1],
+    )
+    def test_validate_invalid_min_tool_interval(self, bad_value):
+        with pytest.raises(ConfigurationError, match="min_tool_interval_seconds"):
+            ServerConfig(min_tool_interval_seconds=bad_value).validate()
 
 
 class TestAppConfig:
@@ -476,6 +486,36 @@ class TestLoaders:
 
         with pytest.raises(ConfigurationError, match="Invalid TOOL_TIMEOUT"):
             load_from_env(AppConfig())
+
+    def test_load_from_env_min_tool_interval(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_MIN_TOOL_INTERVAL_SECONDS", "2.5")
+        from linkedin_mcp_server.config.loaders import load_from_env
+
+        config = load_from_env(AppConfig())
+
+        assert config.server.min_tool_interval_seconds == 2.5
+
+    @pytest.mark.parametrize("bad_value", ["bad", "-1", "inf", "301"])
+    def test_load_from_env_invalid_min_tool_interval(self, monkeypatch, bad_value):
+        monkeypatch.setenv("LINKEDIN_MIN_TOOL_INTERVAL_SECONDS", bad_value)
+        from linkedin_mcp_server.config.loaders import load_from_env
+
+        with pytest.raises(
+            ConfigurationError, match="LINKEDIN_MIN_TOOL_INTERVAL_SECONDS"
+        ):
+            load_from_env(AppConfig())
+
+    def test_load_from_args_min_tool_interval_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_MIN_TOOL_INTERVAL_SECONDS", "4")
+        monkeypatch.setattr(
+            "sys.argv",
+            ["linkedin-mcp-server", "--min-tool-interval-seconds", "1.5"],
+        )
+        from linkedin_mcp_server.config.loaders import load_from_args, load_from_env
+
+        config = load_from_args(load_from_env(AppConfig()))
+
+        assert config.server.min_tool_interval_seconds == 1.5
 
     def test_load_from_args_tool_timeout(self, monkeypatch):
         monkeypatch.setattr(

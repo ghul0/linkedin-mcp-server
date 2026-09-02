@@ -128,6 +128,7 @@ Use `$env:USERPROFILE\.linkedin-mcp` when constructing the host path outside JSO
 | `LOG_LEVEL` | `WARNING` | Logging level: DEBUG, INFO, WARNING, ERROR |
 | `TIMEOUT` | `5000` | Browser timeout in milliseconds |
 | `TOOL_TIMEOUT` | `180` | Timeout for a whole tool call, in seconds. Raise it for heavy scrapes, slow networks, or a cold-start browser. |
+| `LINKEDIN_MIN_TOOL_INTERVAL_SECONDS` | `0` | Minimum spacing between tool-call starts across processes sharing the mounted profile (`0` = disabled, max 300). |
 | `LOGIN_TIMEOUT` | `1800` | How long the login browser waits for you to finish signing in, in seconds (`0` = no limit). The Docker viewer ends the login after 30 minutes either way. |
 | `LOGIN_INLINE_WAIT` | `25` | How long a tool call waits for a login to finish, in seconds (max 45). Not used in Docker, where `--login --login-viewer` is the login path. |
 | `BROWSER_WAIT` | `25` | How long to wait for another server process to hand over the shared browser, in seconds (max 45; `0` = report busy at once). |

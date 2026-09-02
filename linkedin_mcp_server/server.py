@@ -27,7 +27,10 @@ from linkedin_mcp_server.bootstrap import (
     start_background_browser_setup_if_needed,
     stop_background_browser_setup,
 )
-from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
+from linkedin_mcp_server.config.schema import (
+    DEFAULT_MIN_TOOL_INTERVAL_SECONDS,
+    DEFAULT_TOOL_TIMEOUT_SECONDS,
+)
 from linkedin_mcp_server.drivers.browser import (
     close_browser,
     watch_for_handoff_requests,
@@ -154,6 +157,7 @@ async def browser_lifespan(app: FastMCP) -> AsyncIterator[dict[str, Any]]:
 def create_mcp_server(
     *,
     tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+    min_tool_interval: float = DEFAULT_MIN_TOOL_INTERVAL_SECONDS,
     role: ServerRole = ServerRole.DIRECT,
     auth_token: str | None = None,
     proxy_backend: "DaemonProxyBackend | None" = None,
@@ -265,7 +269,11 @@ def create_mcp_server(
     # until its own timeout, or take the lease and leave the process that
     # actually needs it waiting for one held by a caller that never uses it.
     if role.drives_browser:
-        mcp.add_middleware(SequentialToolExecutionMiddleware())
+        mcp.add_middleware(
+            SequentialToolExecutionMiddleware(
+                min_tool_interval_seconds=min_tool_interval
+            )
+        )
     # The notice is appended to one tool result per process, so it belongs
     # wherever a user reads results. On a shared owner it would reach whichever
     # client happened to call first and nobody after that, however many clients

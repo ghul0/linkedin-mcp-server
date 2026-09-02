@@ -16,6 +16,11 @@ from urllib.parse import unquote, urlsplit
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOL_TIMEOUT_SECONDS: float = 180.0
+DEFAULT_MIN_TOOL_INTERVAL_SECONDS: float = 0.0
+# A typo measured in minutes rather than seconds would make the server appear
+# hung. Five minutes is already longer than the default whole-tool timeout and
+# is a generous upper bound for intentional start pacing.
+MAX_MIN_TOOL_INTERVAL_SECONDS: float = 300.0
 DEFAULT_LOGIN_TIMEOUT_SECONDS: float = 1800.0  # 30 min; 0 = no limit
 DEFAULT_LOGIN_INLINE_WAIT_SECONDS: float = 25.0  # bounded inline wait
 # Clamp ceiling: scrape time stacks on top of the inline wait inside one tool
@@ -433,6 +438,8 @@ class ServerConfig:
     port: int = 8000
     path: str = "/mcp"
     tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
+    # Minimum spacing between MCP tool-call starts. 0 disables pacing.
+    min_tool_interval_seconds: float = DEFAULT_MIN_TOOL_INTERVAL_SECONDS
     # Serve every stdio client from one browser-owning process instead of
     # giving each its own. Off while the supervision and liveness work is
     # unfinished: an owner that outlives its client must be provably unable to
@@ -447,6 +454,15 @@ class ServerConfig:
         ):
             raise ConfigurationError(
                 f"tool_timeout_seconds must be a positive finite number, got {self.tool_timeout_seconds}"
+            )
+        if not (
+            math.isfinite(self.min_tool_interval_seconds)
+            and 0 <= self.min_tool_interval_seconds <= MAX_MIN_TOOL_INTERVAL_SECONDS
+        ):
+            raise ConfigurationError(
+                "min_tool_interval_seconds must be a non-negative finite number "
+                f"no greater than {MAX_MIN_TOOL_INTERVAL_SECONDS}, got "
+                f"{self.min_tool_interval_seconds}"
             )
         if self.login_viewer:
             if not self.login:

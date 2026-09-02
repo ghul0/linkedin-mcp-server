@@ -13,6 +13,8 @@
 
 An MCP server that lets AI assistants like Claude read LinkedIn data through your own logged-in browser session. Access profiles and companies, search for jobs, or get job details.
 
+Tool-call pacing is optional. Set `LINKEDIN_MIN_TOOL_INTERVAL_SECONDS=2` or pass `--min-tool-interval-seconds 2` to keep tool-call starts at least two seconds apart across processes sharing the same profile. The default is `0` (disabled), the maximum is 300 seconds, and the CLI flag takes precedence.
+
 ## Sponsor
 
 <p align="center">

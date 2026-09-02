@@ -415,6 +415,7 @@ def create_owner_server(
 
     mcp = create_mcp_server(
         tool_timeout=config.server.tool_timeout_seconds,
+        min_tool_interval=config.server.min_tool_interval_seconds,
         role=ServerRole.OWNER,
         auth_token=token,
     )
