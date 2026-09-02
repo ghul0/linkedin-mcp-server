@@ -9633,6 +9633,8 @@ class TestEveryNormalizedEntryPoint:
                 await getattr(extractor, method)(*args, **kwargs)
         mock_extract.assert_not_called()
         mock_navigate.assert_not_called()
+
+
 class TestGetPendingInvitations:
     """Extractor-level tests for get_pending_invitations.
 

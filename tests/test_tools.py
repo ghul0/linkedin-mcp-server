@@ -1555,6 +1555,8 @@ class TestPostTools:
 
         with pytest.raises(ValidationError, match="max_pages"):
             await mcp.call_tool("search_posts", {"keywords": "python", "max_pages": 0})
+
+
 class TestNetworkTools:
     async def test_get_pending_invitations_success(self, mock_context):
         expected = {
@@ -1600,7 +1602,7 @@ class TestNetworkTools:
 
     async def test_get_pending_invitations_rejects_invalid_kind(self):
         """kind must be one of the Literal values."""
-        from pydantic import ValidationError
+        from fastmcp.exceptions import ValidationError
 
         from linkedin_mcp_server.tools.network import register_network_tools
 
@@ -1612,7 +1614,7 @@ class TestNetworkTools:
 
     async def test_get_pending_invitations_rejects_excessive_limit(self):
         """Verify limit=101 is rejected by Field(le=100) validation."""
-        from pydantic import ValidationError
+        from fastmcp.exceptions import ValidationError
 
         from linkedin_mcp_server.tools.network import register_network_tools
 
