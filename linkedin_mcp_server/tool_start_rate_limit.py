@@ -6,10 +6,12 @@ import asyncio
 import logging
 import math
 import os
+import stat
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from linkedin_mcp_server.common_utils import is_still_at
 from linkedin_mcp_server.profile_lease import acquire_locked_fd
 from linkedin_mcp_server.session_state import auth_root_dir
 
@@ -19,17 +21,70 @@ _STATE_FILE = "tool-start-rate-limit.lock"
 _LOCK_POLL_SECONDS = 0.05
 
 
+class ToolStartRateLimitStateError(RuntimeError):
+    """The pacing state path is not a safe regular file."""
+
+
+def _validate_state_file(fd: int, path: Path) -> None:
+    details = os.fstat(fd)
+    if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+        raise ToolStartRateLimitStateError(
+            f"Tool-start pacing state {path} must be a single-link regular file"
+        )
+    if os.name != "nt" and details.st_uid != os.geteuid():
+        raise ToolStartRateLimitStateError(
+            f"Tool-start pacing state {path} is not owned by the current user"
+        )
+    if not is_still_at(fd, path):
+        raise ToolStartRateLimitStateError(
+            f"Tool-start pacing state {path} was replaced while it was opened"
+        )
+
+
+def _acquire_state_file(path: Path) -> int | None:
+    """Reject a link at the owned state path, then use the project lock helper."""
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        entry = None
+    if entry is not None:
+        attributes = getattr(entry, "st_file_attributes", 0)
+        reparse = attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if stat.S_ISLNK(entry.st_mode) or reparse:
+            raise ToolStartRateLimitStateError(
+                f"Tool-start pacing state {path} is a link or reparse point"
+            )
+
+    fd = acquire_locked_fd(path, exclusive=True)
+    if fd is None:
+        return None
+    try:
+        _validate_state_file(fd, path)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 class ToolStartPermit:
     """A locked start slot that is recorded immediately before tool execution."""
 
-    def __init__(self, fd: int | None, clock: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        fd: int | None,
+        clock: Callable[[], float],
+        path: Path | None = None,
+    ) -> None:
         self._fd = fd
         self._clock = clock
+        self._path = path
 
     def commit(self) -> None:
         """Record the actual start and release the cross-process lock."""
         if self._fd is None:
             return
+        assert self._path is not None
+        _validate_state_file(self._fd, self._path)
         ToolStartRateLimiter._write_timestamp(self._fd, self._clock())
         self.close()
 
@@ -84,8 +139,6 @@ class ToolStartRateLimiter:
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, encoded)
         os.ftruncate(fd, len(encoded))
-        # open_lock_file creates new files as 0600. Harden an old file too in
-        # case it predates this code or was copied in with broader permissions.
         if os.name != "nt":
             os.fchmod(fd, 0o600)
 
@@ -99,7 +152,7 @@ class ToolStartRateLimiter:
 
         path = self._path()
         while True:
-            fd = acquire_locked_fd(path, exclusive=True)
+            fd = _acquire_state_file(path)
             if fd is None:
                 await self._sleep(_LOCK_POLL_SECONDS)
                 continue
@@ -107,16 +160,14 @@ class ToolStartRateLimiter:
             now = self._clock()
             previous = self._read_timestamp(fd)
             delay = 0.0
-            if previous is not None:
-                # A clock correction or a state file copied from a machine
-                # whose clock was ahead must not create an unbounded wait.
-                delay = min(
-                    self._interval,
-                    max(0.0, previous + self._interval - now),
-                )
+            if previous is not None and previous <= now:
+                delay = max(0.0, previous + self._interval - now)
+            # A future timestamp means the wall clock moved backwards. Reset it
+            # on this start instead of rereading it after an unbounded series of
+            # interval-sized sleeps.
             if delay <= 0:
-                return ToolStartPermit(fd, self._clock)
-            os.close(fd)  # closing releases the kernel lock on every backend
+                return ToolStartPermit(fd, self._clock, path)
+            os.close(fd)
 
             if report_wait is not None:
                 await report_wait(delay)

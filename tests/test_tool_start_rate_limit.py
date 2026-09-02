@@ -14,7 +14,10 @@ from fastmcp.server.middleware import MiddlewareContext
 from linkedin_mcp_server.sequential_tool_middleware import (
     SequentialToolExecutionMiddleware,
 )
-from linkedin_mcp_server.tool_start_rate_limit import ToolStartRateLimiter
+from linkedin_mcp_server.tool_start_rate_limit import (
+    ToolStartRateLimiter,
+    ToolStartRateLimitStateError,
+)
 
 
 def _reserve_in_process(state_path: str, interval: float, ready, output) -> None:
@@ -55,6 +58,39 @@ class TestToolStartRateLimiter:
 
         assert sleeps == [2.0]
         assert now[0] == 12.0
+
+    async def test_symlink_state_fails_closed_without_touching_target(self, tmp_path):
+        victim = tmp_path / "victim.txt"
+        victim.write_text("do not change", encoding="utf-8")
+        state = tmp_path / "rate.lock"
+        try:
+            state.symlink_to(victim)
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+
+        limiter = ToolStartRateLimiter(1, state_path=state)
+
+        with pytest.raises(ToolStartRateLimitStateError, match="link|reparse"):
+            await limiter.wait()
+        assert victim.read_text(encoding="utf-8") == "do not change"
+
+    async def test_future_timestamp_is_reset_without_repeated_sleep(self, tmp_path):
+        state = tmp_path / "rate.lock"
+        state.write_text("100.0\n", encoding="ascii")
+
+        async def unexpected_sleep(_delay: float) -> None:
+            pytest.fail("a future timestamp must not cause a retry loop")
+
+        limiter = ToolStartRateLimiter(
+            5,
+            state_path=state,
+            clock=lambda: 10.0,
+            sleep=unexpected_sleep,
+        )
+
+        await asyncio.wait_for(limiter.wait(), timeout=1)
+
+        assert float(state.read_text(encoding="ascii")) == 10.0
 
     async def test_concurrent_calls_are_spaced(self, tmp_path):
         limiter = ToolStartRateLimiter(0.05, state_path=tmp_path / "rate.lock")
